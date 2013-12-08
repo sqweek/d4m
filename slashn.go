@@ -28,6 +28,7 @@ type DirNode struct {
 	name string
 	parent *DirNode
 	children map[string]*DirNode
+	refcount int //number of fids actively referencing this dir
 }
 
 func (node *DirNode) Depth() int {
@@ -54,28 +55,44 @@ func (node *DirNode) Child(name string) *DirNode {
 	} else if child, ok := node.children[name]; ok {
 		return child
 	}
-	child := &DirNode{<-qidgen, name, node, nil}
-	fmt.Println("created " + child.FullPath())
+	child := &DirNode{<-qidgen, name, node, nil, 0}
 	node.children[name] = child
 	return child
 }
 
-var root *DirNode
+type FidAux struct {
+	node *DirNode
+	readbuf []*DirNode
+}
+
+func NewFidAux(node *DirNode) *FidAux {
+	aux := FidAux{node, nil}
+	return &aux
+}
+
+func GetAux(fid *srv.Fid) *FidAux {
+	aux, ok := fid.Aux.(*FidAux)
+	if !ok {
+		panic("wrong type on fid Aux")
+	}
+	return aux
+}
 
 type SlashN struct {
 	srv.Srv
+	root *DirNode
 }
 
 func (sn *SlashN) Attach(req *srv.Req) {
-	fmt.Println("attach")
-	req.Fid.Aux = root
-	req.RespondRattach(&root.qid)
+	req.Fid.Aux = NewFidAux(sn.root)
+	req.RespondRattach(&sn.root.qid)
 }
 
 func (sn *SlashN) Walk(req *srv.Req) {
-	node := req.Fid.Aux.(*DirNode)
+	aux := GetAux(req.Fid)
+	node := aux.node
 	if len(req.Tc.Wname) == 0 {
-		req.Newfid.Aux = node
+		req.Newfid.Aux = NewFidAux(node)
 		req.RespondRwalk([]p.Qid{})
 		return
 	}
@@ -91,12 +108,13 @@ func (sn *SlashN) Walk(req *srv.Req) {
 		n = n.Child(req.Tc.Wname[i])
 		qids[i] = n.qid
 	}
-	req.Newfid.Aux = n
+	req.Newfid.Aux = NewFidAux(n)
 	req.RespondRwalk(qids)
 }
 
 func (sn *SlashN) Open(req *srv.Req) {
-	dir := req.Fid.Aux.(*DirNode)
+	aux := GetAux(req.Fid)
+	dir := aux.node
 	req.RespondRopen(&dir.qid, 0)
 }
 
@@ -105,23 +123,36 @@ func (sn *SlashN) Create(req *srv.Req) {
 		req.RespondError("permission denied")
 		return
 	}
-	dir := req.Fid.Aux.(*DirNode)
+	aux := GetAux(req.Fid)
+	dir := aux.node
 	child := dir.Child(req.Tc.Name)
 	req.RespondRcreate(&child.qid, 0)
 }
 
 func (sn *SlashN) Read(req *srv.Req) {
-	node := req.Fid.Aux.(*DirNode)
+	aux := GetAux(req.Fid)
+	node := aux.node
 	p.InitRread(req.Rc, req.Tc.Count)
-	n := 0
 	if req.Tc.Offset == 0 {
-		b := req.Rc.Data
-		for name := range node.children {
-			d := p.Dir{Type: p.QTDIR, Qid: node.children[name].qid, Mode: p.DMDIR | 0755, Name: name}
-			sz := p.PackDir(&d, b, req.Conn.Dotu)
-			b = b[sz:]
-			n += sz
+		aux.readbuf = make([]*DirNode, len(node.children))
+		i := 0
+		for _, child := range node.children {
+			aux.readbuf[i] = child
+			i++
 		}
+	}
+	n := 0
+	b := req.Rc.Data
+	for len(aux.readbuf) > 0 {
+		child := aux.readbuf[0]
+		d := p.Dir{Type: p.QTDIR, Qid: child.qid, Mode: p.DMDIR | 0755, Name: child.name}
+		sz := p.PackDir(&d, b, req.Conn.Dotu)
+		if sz == 0 {
+			break
+		}
+		b = b[sz:]
+		n += sz
+		aux.readbuf = aux.readbuf[1:]
 	}
 	p.SetRreadCount(req.Rc, uint32(n))
 	req.Respond()
@@ -136,7 +167,8 @@ func (sn *SlashN) Clunk(req *srv.Req) {
 }
 
 func (sn *SlashN) Remove(req *srv.Req) {
-	dir := req.Fid.Aux.(*DirNode)
+	aux := GetAux(req.Fid)
+	dir := aux.node
 	if len(dir.children) != 0 || dir.parent == nil {
 		req.RespondError("directory not empty")
 		return
@@ -146,11 +178,8 @@ func (sn *SlashN) Remove(req *srv.Req) {
 }
 
 func (sn *SlashN) Stat(req *srv.Req) {
-	dir, ok := req.Fid.Aux.(*DirNode)
-	if !ok {
-		req.RespondError("invalid request")
-		return
-	}
+	aux := GetAux(req.Fid)
+	dir := aux.node
 	req.RespondRstat(&p.Dir{Qid: dir.qid, Type: p.QTDIR, Name: dir.name, Mode: p.DMDIR | 0755})
 }
 
@@ -169,11 +198,10 @@ func main() {
 
 	go count(qidgen)
 
-	root = &DirNode{<-qidgen, "", nil, nil}
-
 	os.Remove("/tmp/ns.sqweek.:0/slashn")
 
 	s := new(SlashN)
+	s.root = &DirNode{<-qidgen, "", nil, nil, 1}
 	s.Id = "/n"
 	s.Debuglevel = srv.DbgPrintFcalls
 	s.Dotu = false
