@@ -5,22 +5,22 @@ import (
 	"code.google.com/p/go9p/p/srv"
 	"flag"
 	"fmt"
-	"sync"
 	"os"
 )
 
 var maxDepth = flag.Int("depth", 2, "maximum directory depth")
 
-type Counter struct {
-	sync.Mutex
-	value uint64
-}
+var qidgen = make(chan p.Qid)
 
-func (c *Counter) inc() uint64 {
-	c.Lock()
-	defer c.Unlock()
-	c.value++
-	return c.value
+func count(c chan p.Qid) {
+	i := uint64(0)
+	for {
+		c <- p.Qid{p.QTDIR, 0, i}
+		i++
+		if (i == 0) {
+			panic("qids exhausted!")
+		}
+	}
 }
 
 type DirNode struct {
@@ -54,18 +54,13 @@ func (node *DirNode) Child(name string) *DirNode {
 	} else if child, ok := node.children[name]; ok {
 		return child
 	}
-	child := &DirNode{qidgen(), name, node, nil}
+	child := &DirNode{<-qidgen, name, node, nil}
 	fmt.Println("created " + child.FullPath())
 	node.children[name] = child
 	return child
 }
 
 var root *DirNode
-var counter Counter
-
-func qidgen() p.Qid {
-	return p.Qid{p.QTDIR, 0, counter.inc()}
-}
 
 type SlashN struct {
 	srv.Srv
@@ -172,7 +167,9 @@ func main() {
 	//gid := p.OsUsers.Gid2Group(os.Getegid())
 	flag.Parse()
 
-	root = &DirNode{qidgen(), "", nil, nil}
+	go count(qidgen)
+
+	root = &DirNode{<-qidgen, "", nil, nil}
 
 	os.Remove("/tmp/ns.sqweek.:0/slashn")
 
