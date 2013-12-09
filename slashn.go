@@ -10,8 +10,6 @@ import (
 	"os"
 )
 
-var maxDepth = flag.Int("depth", 2, "maximum directory depth")
-
 var qidgen = make(chan p.Qid)
 
 func count(c chan p.Qid) {
@@ -79,6 +77,10 @@ func (node *DirNode) Rmdir() error {
 	return nil
 }
 
+func (node *DirNode) Dir() *p.Dir {
+	return &p.Dir{Qid: node.qid, Type: p.QTDIR, Name: node.name, Mode: p.DMDIR | 0755}
+}
+
 func (node *DirNode) IncRef() {
 	node.Lock()
 	node.refcount++
@@ -117,6 +119,7 @@ func GetAux(fid *srv.Fid) *FidAux {
 type SlashN struct {
 	srv.Srv
 	root *DirNode
+	maxDepth int
 }
 
 func (sn *SlashN) Attach(req *srv.Req) {
@@ -133,7 +136,7 @@ func (sn *SlashN) Walk(req *srv.Req) {
 		return
 	}
 
-	if node.Depth() + len(req.Tc.Wname) > *maxDepth {
+	if node.Depth() + len(req.Tc.Wname) > sn.maxDepth {
 		req.RespondError("maximum depth exceeded")
 		return
 	}
@@ -149,9 +152,7 @@ func (sn *SlashN) Walk(req *srv.Req) {
 }
 
 func (sn *SlashN) Open(req *srv.Req) {
-	aux := GetAux(req.Fid)
-	dir := aux.node
-	req.RespondRopen(&dir.qid, 0)
+	req.RespondRopen(&GetAux(req.Fid).node.qid, 0)
 }
 
 func (sn *SlashN) Create(req *srv.Req) {
@@ -159,9 +160,7 @@ func (sn *SlashN) Create(req *srv.Req) {
 		req.RespondError("permission denied")
 		return
 	}
-	aux := GetAux(req.Fid)
-	dir := aux.node
-	child := dir.Child(req.Tc.Name)
+	child := GetAux(req.Fid).node.Child(req.Tc.Name)
 	req.RespondRcreate(&child.qid, 0)
 }
 
@@ -180,9 +179,7 @@ func (sn *SlashN) Read(req *srv.Req) {
 	n := 0
 	b := req.Rc.Data
 	for len(aux.readbuf) > 0 {
-		child := aux.readbuf[0]
-		d := p.Dir{Type: p.QTDIR, Qid: child.qid, Mode: p.DMDIR | 0755, Name: child.name}
-		sz := p.PackDir(&d, b, req.Conn.Dotu)
+		sz := p.PackDir(aux.readbuf[0].Dir(), b, req.Conn.Dotu)
 		if sz == 0 {
 			break
 		}
@@ -194,32 +191,31 @@ func (sn *SlashN) Read(req *srv.Req) {
 	req.Respond()
 }
 
-func (sn *SlashN) Write(req *srv.Req) {
-	req.RespondError("can't write to /n")
-}
-
 func (sn *SlashN) Clunk(req *srv.Req) {
 	GetAux(req.Fid).node.DecRef()
 	req.RespondRclunk()
+}
+
+func (sn *SlashN) Stat(req *srv.Req) {
+	req.RespondRstat(GetAux(req.Fid).node.Dir())
+}
+
+func (sn *SlashN) Write(req *srv.Req) {
+	req.RespondError("permission denied")
 }
 
 func (sn *SlashN) Remove(req *srv.Req) {
 	req.RespondError("permission denied")
 }
 
-func (sn *SlashN) Stat(req *srv.Req) {
-	aux := GetAux(req.Fid)
-	dir := aux.node
-	req.RespondRstat(&p.Dir{Qid: dir.qid, Type: p.QTDIR, Name: dir.name, Mode: p.DMDIR | 0755})
-}
-
 func (sn *SlashN) Wstat(req *srv.Req) {
-	req.RespondError("can't wstat /n")
+	req.RespondError("permission denied")
 }
 
 
 var net = flag.String("net", "unix", "network type")
 var addr = flag.String("addr", "/tmp/ns.sqweek.:0/slashn", "network address")
+var maxDepth = flag.Int("depth", 2, "maximum directory depth")
 
 func main() {
 	//uid := p.OsUsers.Uid2User(os.Geteuid())
@@ -232,6 +228,7 @@ func main() {
 
 	s := new(SlashN)
 	s.root = NewDirNode(nil, "")
+	s.maxDepth = *maxDepth
 	s.Id = "/n"
 	s.Debuglevel = srv.DbgPrintFcalls
 	s.Dotu = false
