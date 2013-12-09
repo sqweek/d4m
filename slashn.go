@@ -3,6 +3,8 @@ package main
 import (
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
+	"errors"
+	"sync"
 	"flag"
 	"fmt"
 	"os"
@@ -24,6 +26,7 @@ func count(c chan p.Qid) {
 }
 
 type DirNode struct {
+	sync.Mutex
 	qid p.Qid
 	name string
 	parent *DirNode
@@ -49,15 +52,47 @@ func (node *DirNode) FullPath() string {
 	return s
 }
 
+func NewDirNode(parent *DirNode, name string) *DirNode {
+	node := DirNode{qid: <-qidgen, name: name, parent: parent}
+	return &node
+}
+
 func (node *DirNode) Child(name string) *DirNode {
 	if node.children == nil {
 		node.children = make(map[string]*DirNode)
 	} else if child, ok := node.children[name]; ok {
 		return child
 	}
-	child := &DirNode{<-qidgen, name, node, nil, 0}
+	child := NewDirNode(node, name)
 	node.children[name] = child
 	return child
+}
+
+func (node *DirNode) Rmdir() error {
+	if len(node.children) != 0 {
+		return errors.New("directory not empty")
+	}
+	if node.parent == nil {
+		return errors.New("can't remove root dir")
+	}
+	delete(node.parent.children, node.name)
+	return nil
+}
+
+func (node *DirNode) IncRef() {
+	node.Lock()
+	node.refcount++
+	node.Unlock()
+}
+
+func (node *DirNode) DecRef() {
+	node.Lock()
+	node.refcount--
+	done := (node.refcount == 0)
+	node.Unlock()
+	if done {
+		node.Rmdir()
+	}
 }
 
 type FidAux struct {
@@ -67,6 +102,7 @@ type FidAux struct {
 
 func NewFidAux(node *DirNode) *FidAux {
 	aux := FidAux{node, nil}
+	node.IncRef()
 	return &aux
 }
 
@@ -163,18 +199,12 @@ func (sn *SlashN) Write(req *srv.Req) {
 }
 
 func (sn *SlashN) Clunk(req *srv.Req) {
+	GetAux(req.Fid).node.DecRef()
 	req.RespondRclunk()
 }
 
 func (sn *SlashN) Remove(req *srv.Req) {
-	aux := GetAux(req.Fid)
-	dir := aux.node
-	if len(dir.children) != 0 || dir.parent == nil {
-		req.RespondError("directory not empty")
-		return
-	}
-	delete(dir.parent.children, dir.name)
-	req.RespondRremove()
+	req.RespondError("permission denied")
 }
 
 func (sn *SlashN) Stat(req *srv.Req) {
@@ -201,7 +231,7 @@ func main() {
 	os.Remove("/tmp/ns.sqweek.:0/slashn")
 
 	s := new(SlashN)
-	s.root = &DirNode{<-qidgen, "", nil, nil, 1}
+	s.root = NewDirNode(nil, "")
 	s.Id = "/n"
 	s.Debuglevel = srv.DbgPrintFcalls
 	s.Dotu = false
