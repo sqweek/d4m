@@ -3,6 +3,7 @@ package main
 import (
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
+	"github.com/sqweek/p9p-util/ns"
 	"errors"
 	"sync"
 	"flag"
@@ -214,27 +215,33 @@ func (sn *SlashN) Wstat(req *srv.Req) {
 
 
 var net = flag.String("net", "unix", "network type")
-var addr = flag.String("addr", "/tmp/ns.sqweek.:0/slashn", "network address")
+var addr = flag.String("addr", "${NAMESPACE}/d4m", "network address")
 var maxDepth = flag.Int("depth", 2, "maximum directory depth")
+var chatty = flag.Bool("debug", false, "chatty 9p (print fcalls)")
 
 func main() {
-	//uid := p.OsUsers.Uid2User(os.Geteuid())
-	//gid := p.OsUsers.Gid2Group(os.Getegid())
+	usageOrig := flag.Usage
+	flag.Usage = func() {
+		usageOrig()
+		fmt.Fprintf(os.Stderr, "* if NAMESPACE is not set, /tmp/ns.$USER.$DISPLAY is used\n");
+		fmt.Fprintf(os.Stderr, "* environment variables are expanded only for -addr\n")
+	}
 	flag.Parse()
+	ns.Setup()
 
 	go count(qidgen)
-
-	os.Remove("/tmp/ns.sqweek.:0/slashn")
 
 	s := new(SlashN)
 	s.root = NewDirNode(nil, "")
 	s.maxDepth = *maxDepth
 	s.Id = "/n"
-	s.Debuglevel = srv.DbgPrintFcalls
+	if *chatty {
+		s.Debuglevel = srv.DbgPrintFcalls
+	}
 	s.Dotu = false
 	
 	s.Start(s)
-	err := s.StartNetListener(*net, *addr)
+	err := s.StartNetListener(*net, os.ExpandEnv(*addr))
 	if err != nil {
 		fmt.Printf("Error: %s\n", err)
 	}
