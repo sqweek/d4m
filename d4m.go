@@ -69,10 +69,10 @@ func (node *DirNode) Child(name string) *DirNode {
 
 func (node *DirNode) Rmdir() error {
 	if len(node.children) != 0 {
-		return errors.New("directory not empty")
+		return errors.New("Directory not empty")
 	}
 	if node.parent == nil {
-		return errors.New("can't remove root dir")
+		return errors.New("cannot remove root")
 	}
 	delete(node.parent.children, node.name)
 	return nil
