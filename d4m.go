@@ -8,7 +8,10 @@ import (
 	"sync"
 	"flag"
 	"fmt"
+	"net"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 var qidgen = make(chan p.Qid)
@@ -214,7 +217,7 @@ func (sn *SlashN) Wstat(req *srv.Req) {
 }
 
 
-var net = flag.String("net", "unix", "network type")
+var ntype = flag.String("net", "unix", "network type")
 var addr = flag.String("addr", "${NAMESPACE}/d4m", "network address")
 var maxDepth = flag.Int("depth", 2, "maximum directory depth")
 var chatty = flag.Bool("debug", false, "chatty 9p (print fcalls)")
@@ -241,7 +244,22 @@ func main() {
 	s.Dotu = false
 	
 	s.Start(s)
-	err := s.StartNetListener(*net, os.ExpandEnv(*addr))
+	a := os.ExpandEnv(*addr)
+	listener, err := net.Listen(*ntype, a)
+	if err != nil {
+		fmt.Printf("listen %s: %s\n", a, err)
+		os.Exit(1)
+	}
+	defer listener.Close()
+	sigchan := make(chan os.Signal)
+	go func() {
+		<- sigchan
+		listener.Close()
+		os.Exit(1)
+	}()
+	signal.Notify(sigchan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	
+	err = s.StartListener(listener)
 	if err != nil {
 		fmt.Printf("Error: %s\n", err)
 	}
