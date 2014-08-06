@@ -3,15 +3,12 @@ package main
 import (
 	"code.google.com/p/go9p/p"
 	"code.google.com/p/go9p/p/srv"
-	"github.com/sqweek/p9p-util/ns"
+	"github.com/sqweek/p9p-util/p9p"
 	"errors"
 	"sync"
 	"flag"
 	"fmt"
-	"net"
 	"os"
-	"os/signal"
-	"syscall"
 )
 
 var qidgen = make(chan p.Qid)
@@ -217,20 +214,12 @@ func (sn *SlashN) Wstat(req *srv.Req) {
 }
 
 
-var ntype = flag.String("net", "unix", "network type")
-var addr = flag.String("addr", "${NAMESPACE}/d4m", "network address")
+var addr = flag.String("addr", "d4m", "service name/dial string")
 var maxDepth = flag.Int("depth", 2, "maximum directory depth")
 var chatty = flag.Bool("debug", false, "chatty 9p (print fcalls)")
 
 func main() {
-	usageOrig := flag.Usage
-	flag.Usage = func() {
-		usageOrig()
-		fmt.Fprintf(os.Stderr, "* if NAMESPACE is not set, /tmp/ns.$USER.$DISPLAY is used\n");
-		fmt.Fprintf(os.Stderr, "* environment variables are expanded only for -addr\n")
-	}
 	flag.Parse()
-	ns.Setup()
 
 	go count(qidgen)
 
@@ -244,20 +233,13 @@ func main() {
 	s.Dotu = false
 	
 	s.Start(s)
-	a := os.ExpandEnv(*addr)
-	listener, err := net.Listen(*ntype, a)
+	listener, err := p9p.ListenSrv(*addr)
 	if err != nil {
-		fmt.Printf("listen %s: %s\n", a, err)
+		fmt.Printf("listen %s: %s\n", *addr, err)
 		os.Exit(1)
 	}
 	defer listener.Close()
-	sigchan := make(chan os.Signal)
-	go func() {
-		<- sigchan
-		listener.Close()
-		os.Exit(1)
-	}()
-	signal.Notify(sigchan, os.Interrupt, syscall.SIGTERM, syscall.SIGQUIT)
+	p9p.CloseOnSignal(listener)
 	
 	err = s.StartListener(listener)
 	if err != nil {
