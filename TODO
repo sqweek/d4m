@@ -1,0 +1,2 @@
+* recycle qids / fail gracefully
+* add -f flag to fork after listening
